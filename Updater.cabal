@@ -13,6 +13,7 @@ Build-Type:	Simple
 
 Library
   Build-Depends:	base >= 3 && < 5, stm
+  ghc-options:     -Wall -fno-warn-tabs
   Exposed-Modules:
     Updater
 

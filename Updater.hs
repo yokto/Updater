@@ -19,12 +19,9 @@ module Updater (
 	putLine
 	) where
 
-import Control.Concurrent.STM
 import Control.Applicative
 import Updater.Internal hiding (getValue, newSignal)
 import qualified Updater.Internal as Internal
-
-import Control.Concurrent
 
 
 -- |

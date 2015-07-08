@@ -19,8 +19,6 @@ import Control.Concurrent.STM
 import qualified Updater.List as List
 
 import Control.Applicative
-import Control.Monad
-
 import Control.Exception.Base
 
 putLine :: String -> Updater ()
