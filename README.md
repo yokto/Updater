@@ -13,7 +13,7 @@ We basically have the portable version of signals.
 This is basically just an TVar from stm with some update notifiers.
 It is completely portable and can be used anywhere in your program.
 
-I set the following you will be able to copy paste the examples to ghci.
+If you set the following you will be able to copy paste the examples to ghci.
 
     :set +m
     :m +Control.Concurrent
@@ -27,8 +27,7 @@ So let's make a signal.
     runUpdater (getValue signal) >>= print -- Just 42
     
 
-So this is the way of using signals manually.
-You can also register listeners.
+This is the way of using signals manually.
 However, it is much more confortable to use the Updater monad to combine the signals.
 Let's have a look at an example.
 
