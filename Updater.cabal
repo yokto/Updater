@@ -16,6 +16,8 @@ Library
   ghc-options:     -Wall -fno-warn-tabs
   Exposed-Modules:
     Updater
+  Other-Modules:
+    Updater.List, Updater.Internal
 
 source-repository this
   type:        git
