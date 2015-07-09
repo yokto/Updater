@@ -17,7 +17,7 @@ If you set the following you will be able to copy paste the examples to ghci.
 
     :set +m
     :m +Control.Concurrent
-    :l +Updater
+    :m +Updater
 
 So let's make a signal.
 

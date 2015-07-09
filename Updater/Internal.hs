@@ -25,7 +25,7 @@ import Control.Monad.Fix
 putLine :: String -> Updater ()
 putLine = onCommit . putStrLn
 
---- START: Signals ---
+--- START: SIGNALS ---
 
 -- |
 -- `Signal` is the portable Signal they can be exchanged between
@@ -33,23 +33,44 @@ putLine = onCommit . putStrLn
 -- change hooks.
 data Signal a = Signal {
 	signalValue :: TVar (Maybe a),
-	-- | cleanup listeners are always executed before the regular listeners
-	signalCleanupListener :: List.LinkedList (a -> Updater ()),
 	signalListeners :: List.LinkedList (a -> Updater ())
 	}
 
-newSignal :: STM (a -> Updater (), Signal a)
-newSignal = do
+-- | don't use
+newSignal'' :: STM (a -> Updater (), Signal a)
+newSignal'' = do
 	value <- newTVar (Nothing)
-	cleanupListeners <- List.empty
 	listeners <- List.empty
 	let runSignal a = do
-		liftSTM $ writeTVar value $ Just a
-		cleanupListeners' <-liftSTM $ List.toList cleanupListeners
-		mapM_ ($ a) cleanupListeners'
 		listeners' <- liftSTM $ List.toList listeners
 		mapM_ ($ a) listeners'
-	return (runSignal,Signal value cleanupListeners listeners)
+	return (runSignal, Signal value listeners)-- | use carefully
+
+-- | use carefully
+newSignal' :: STM (a -> Updater (), Signal a)
+newSignal' = do
+	(button, signal) <- newSignal''
+	let runSignal a = do
+		liftSTM $ writeTVar (signalValue signal) $ Just a
+		button a
+	return (runSignal, signal)
+
+-- |
+-- Creates a new signal and gives you a way to update it.
+-- It is important to note that because the signal and the
+-- update function are separate, you can easily have readonly,
+-- writeonly permissions.
+-- You can initialize the signal with an input.
+newSignal :: (Maybe a) -> Updater (a -> Updater (), Signal a)
+newSignal initialMay = do
+	(button, signal) <- liftSTM newSignal''
+	let runSignal a = do
+		liftSTM $ writeTVar(signalValue signal) $ Just a
+		onCommitUpdater $ button a
+	case initialMay of
+		 (Just initial) -> runSignal initial
+		 Nothing -> return ()
+	return (runSignal, signal)
 
 getValue :: Signal a -> STM (Maybe a)
 getValue signal = readTVar $ signalValue signal
@@ -64,19 +85,16 @@ addListener signal listener = do
 	node <- List.append listener (signalListeners signal)
 	return (List.delete node)
 
-addCleanupListener :: Signal a -> (a -> Updater ()) -> STM (STM ())
-addCleanupListener signal listener = do
-	node <- List.append listener (signalCleanupListener signal)
-	return (List.delete node)
-
-addSingletonCleanupListener :: Signal a -> (a -> Updater ()) -> STM (STM ())
-addSingletonCleanupListener signal listener = mfix add where
-	add remove = addCleanupListener signal (run remove)
+addSingletonListener :: Signal a -> (a -> Updater ()) -> STM (STM ())
+addSingletonListener signal listener = mfix add where
+	add remove = addListener signal (run remove)
 	run remove value = liftSTM remove >> listener value
---- END: Signals ---
+
+--- END: SIGNALS ---
 
 data State = State {
-	stateOnCommit :: TVar (IO ()),
+	stateOnCommitUpdater :: TVar ([Updater ()]),
+	stateOnCommitIO :: TVar ([IO ()]),
 	stateCleanup :: Signal ()
 }
 
@@ -109,7 +127,12 @@ onCleanup cleanup = do
 onCommit :: IO () -> Updater ()
 onCommit action = do
 	state <- getState
-	liftSTM $ modifyTVar (stateOnCommit state) (>>action)
+	liftSTM $ modifyTVar (stateOnCommitIO state) (action:)
+
+onCommitUpdater :: Updater () -> Updater ()
+onCommitUpdater action = do
+	state <- getState
+	liftSTM $ modifyTVar (stateOnCommitUpdater state) (action:)
 
 getState :: Updater State
 getState = Updater $ \restCalc state -> restCalc state state
@@ -118,32 +141,30 @@ getState = Updater $ \restCalc state -> restCalc state state
 -- Runs everything below it everytime its input signal is updated. 
 getEvent :: Signal a -> Updater a
 getEvent signal =  Updater $ \restCalc state->  do
-	(cleanupButtonButton, cleanupButtonSignal) <- newSignal
+	(cleanupButtonButton, cleanupButtonSignal) <- newSignal'
 
-	let listener value = do
-		(cleanupButton, cleanupSignal) <- liftSTM newSignal
-		cleanupButtonButton cleanupButton
-		state' <-getState
-		liftSTM $ restCalc value (state' { stateCleanup =  cleanupSignal })
-		return ()
-
-	let cleanupListener _ = do
+	let cleaner = do
 		button <- liftSTM $ getValue cleanupButtonSignal
 		case button of
 			 Nothing -> return ()
 			 (Just button') -> button' ()
 
+	let listener value = do
+		cleaner
+		(cleanupButton, cleanupSignal) <- liftSTM newSignal'
+		cleanupButtonButton cleanupButton -- TODO
+		state' <-getState
+		liftSTM $ restCalc value (state' { stateCleanup =  cleanupSignal })
+		return ()
+
+
 	cleanupValue <- getValue (stateCleanup state)
 	case cleanupValue of
 			Nothing -> do
-				removeCleanupListener <- addCleanupListener signal cleanupListener
 				removeListener <- addListener signal listener
-				addSingletonCleanupListener
+				addSingletonListener
 					(stateCleanup state)
-					(const $ do
-						cleanupListener (error "should not be read")
-						liftSTM removeListener
-						liftSTM removeCleanupListener)
+					(const $ cleaner >> liftSTM removeListener)
 				return ()
 			(Just _) -> return ()
 
@@ -167,14 +188,15 @@ getBehavior sig = initial <|> getEvent sig where
 runUpdater :: Updater a -> IO a
 runUpdater updater' = wrapper where
 	wrapper = do
-		(cleanupButton, cleanupSignal) <- atomically $ newSignal
+		(cleanupButton, cleanupSignal) <- atomically $ newSignal'
 		onException
 			(run updater' cleanupButton cleanupSignal)
 			(run (cleanupButton ())  cleanupButton cleanupSignal)
 		
 	run updater cleanupButton cleanupSignal= do
 		(resultVar, onCommitAction) <- atomically $ do
-			onCommit' <- newTVar $ return ()
+			onCommit' <- newTVar []
+			onCommitUpdaterVar <- newTVar []
 			resultVar <- newEmptyTMVar
 			runUpdater'
 				( do
@@ -184,15 +206,28 @@ runUpdater updater' = wrapper where
 				(const $ const $ return ()) 
 				(State {
 					stateCleanup = cleanupSignal,
-					stateOnCommit = onCommit' })
+					stateOnCommitUpdater = onCommitUpdaterVar,
+					stateOnCommitIO = onCommit' })
+			let runOnCommitUpdater onCommitUpdaterVal = do
+				onCommitUs <- newTVar []
+				runUpdater' (onCommitUpdaterVal) (const $ const $ return ())  (State
+					{ stateCleanup = error "should not be needed"
+					, stateOnCommitUpdater = onCommitUs
+					, stateOnCommitIO = onCommit'
+					})
+				onCommitUs' <- readTVar onCommitUs
+				mapM_ runOnCommitUpdater onCommitUs'
+			readTVar onCommitUpdaterVar >>= mapM_ runOnCommitUpdater
 			onCommitAction <- readTVar onCommit'
 			return (resultVar, onCommitAction)
-		onCommitAction
+		sequence_ $ reverse onCommitAction
 		result <- atomically $ takeTMVar resultVar
 		return result
 
 liftSTM :: STM a -> Updater a
 liftSTM run = Updater (\restCalc state -> run >>= (\x -> restCalc x state))
+
+--- START: INSTANCES ---
 
 instance Functor Updater where
 	fmap f (Updater giveMeNext) = Updater (\next -> giveMeNext (next . f))
@@ -201,8 +236,8 @@ instance Applicative Updater where
 	pure a = Updater $ \giveMeA -> giveMeA a
  	updater1 <*> updater2 = Updater $ updater where
  		updater restCalc state = do
- 			(buttonF, signalF) <- newSignal
- 			(buttonX, signalX) <- newSignal
+ 			(buttonF, signalF) <- newSignal'
+ 			(buttonX, signalX) <- newSignal'
 
  			runUpdater' (updater1 >>= buttonF) (const $ const $ return ()) state
  			runUpdater' (updater2 >>= buttonX) (const $ const $ return ()) state
@@ -220,8 +255,8 @@ instance Alternative Updater where
 	empty = Updater $ \_ _ -> return ()
 	updater1 <|> updater2 = Updater $ updater where
 		updater restCalc state = do
-			(button,signal) <-newSignal
-			(cleanupButton, cleanupSignal) <- newSignal
+			(button,signal) <-newSignal'
+			(cleanupButton, cleanupSignal) <- newSignal'
 
 			runUpdater' (do
 				-- we don't want the next line to get cleaned up before
@@ -236,7 +271,7 @@ instance Alternative Updater where
 			
 			cleanup <- getValue $ stateCleanup state
 			case cleanup of
-				 Nothing -> addSingletonCleanupListener (stateCleanup state) cleanupButton >> return ()
+				 Nothing -> addSingletonListener (stateCleanup state) cleanupButton >> return ()
 				 (Just _) -> runUpdater' (cleanupButton ()) (const $ const $ return ()) state
 			return ()
 
@@ -244,3 +279,5 @@ instance Monad Updater where
 	(Updater giveMeNext) >>= valueToNextUpd = Updater $ updater where
 		updater end = 	giveMeNext $  \value -> runUpdater' (valueToNextUpd value) end
 	return a = Updater $ \end -> end a
+
+--- END: INSTANCES ---

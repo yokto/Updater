@@ -40,21 +40,20 @@ bandit :: StdGen -> Updater ()
 bandit rng = do	
 
 	-- make all the signals
-	(lineButton, lineSignal) <- newSignal
-	(creditButton, creditSignal) <- newSignal
-	(coinButton, coinSignal) <- newSignal
-	(playButton, playSignal) <- newSignal
-	(quitButton, quitSignal) <- newSignal
-	(randomButton, randomSignal) <- newSignal
+	(lineButton, lineSignal) <- newSignal Nothing
+	(creditButton, creditSignal) <- newSignal (Just 0)
+	(coinButton, coinSignal) <- newSignal Nothing
+	(playButton, playSignal) <- newSignal Nothing
+	(quitButton, quitSignal) <- newSignal Nothing
+	(randomButton, randomSignal) <- newSignal (Just rng)
 
 	-- initialize credit and random number generator
-	creditButton 0
 	
 	let
 		getRandomInt :: Updater Int
 		getRandomInt = do
-			rng' <- getValue randomSignal
-			let ( ret, nextRng) = randomR (1,9) $ fromMaybe rng rng'
+			(Just rng) <- getValue randomSignal
+			let ( ret, nextRng) = randomR (1,9) $ rng
 			randomButton nextRng
 			return ret
 
@@ -91,16 +90,17 @@ bandit rng = do
 		credit <- getBehavior creditSignal
 		getEvent playSignal
 		when (credit <= 0) (putLine "Not enough credit" >> stop)
-		creditButton (credit - 1)
-		
+
 		numbers <- replicateM 3 getRandomInt
 		putLine "Your Numbers are:"
 		putLine $ show numbers
 
-		case (length $ nub numbers) of
-			 1 -> putLine "*** Triple Win ***\nYou get 20 coins" >> creditButton (credit + 20)
-			 2 -> putLine "** Double Win **\nYou get 3 coins" >> creditButton (credit + 3)
-			 _ -> putLine "You lose. Better luck next time"
+		gain <- case (length $ nub numbers) of
+			 1 -> putLine "*** Triple Win ***\nYou get 20 coins" >> return 20
+			 2 -> putLine "** Double Win **\nYou get 3 coins" >> return 3
+			 _ -> putLine "You lose. Better luck next time" >> return (-1)
+
+		withValue creditSignal $ \credit' -> creditButton (credit' + gain)
 		return ()
 
 

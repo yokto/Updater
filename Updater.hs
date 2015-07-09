@@ -16,11 +16,12 @@ module Updater (
 	getBehavior,
 	local,
 	liftSTM,
-	putLine
+	putLine,
+	withValue
 	) where
 
 import Control.Applicative
-import Updater.Internal hiding (getValue, newSignal)
+import Updater.Internal hiding (getValue)
 import qualified Updater.Internal as Internal
 
 
@@ -58,9 +59,11 @@ getValue :: Signal a -> Updater (Maybe a)
 getValue = liftSTM . Internal.getValue
 
 -- |
--- Creates a new signal and gives you a way to update it.
--- It is important to note that because the signal and the
--- update function are separate, you can easily have readonly,
--- writeonly permissions.
-newSignal :: Updater (a -> Updater (), Signal a)
-newSignal = liftSTM Internal.newSignal
+-- Just a quick way of doing something with a 
+-- value. If the signal is not initialized it will do nothing
+withValue :: Signal a -> (a -> Updater b) -> Updater (Maybe b)
+withValue signal function = do
+	valMay <- getValue signal
+	case valMay of
+		 (Just val) -> Just <$> function val
+		 Nothing -> return Nothing
