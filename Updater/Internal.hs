@@ -20,6 +20,7 @@ import qualified Updater.List as List
 
 import Control.Applicative
 import Control.Exception.Base
+import Control.Monad.Fix
 
 putLine :: String -> Updater ()
 putLine = onCommit . putStrLn
@@ -57,6 +58,11 @@ addListener :: Signal a -> (a -> Updater ()) -> STM (STM ())
 addListener signal listener = do
 	node <- List.append listener (signalListeners signal)
 	return (List.delete node)
+
+addSingletonListener :: Signal a -> (a -> Updater ()) -> STM (STM ())
+addSingletonListener signal listener = mfix add where
+	add remove = addListener signal (run remove)
+	run remove value = liftSTM remove >> listener value
 --- END: Signals ---
 
 data State = State {
@@ -87,29 +93,13 @@ onCleanup cleanup = do
 	getCleanup >>= getEvent
 	cleanup
 
-newCleanupHelper :: Signal () -> STM (Updater (Signal ()))
-newCleanupHelper endSignal = do
-	(cleanupButton,cleanupSignal) <- newSignal
-	return $ do
-		cleanup' <- liftSTM $ getValue cleanupSignal
-		(innerCleanupButton, innerCleanupSignal) <- liftSTM $ newSignal
-		cleanupButton (innerCleanupButton ())
-
-		removeListener <- liftSTM $ addListener (endSignal) (innerCleanupButton)
-		_ <- liftSTM $ addListener innerCleanupSignal (const $ liftSTM removeListener)
-
-		case cleanup' of
-			Nothing -> return ()
-			(Just cleanup) -> cleanup
-		return innerCleanupSignal
-
 -- |
 -- IO actions given here will be executed once a signal update
 -- has been completed. They keep the order in which they are inserted.
 onCommit :: IO () -> Updater ()
-onCommit action = Updater $ \restCalc state -> do
-	modifyTVar (stateOnCommit state) (>>action)
-	restCalc () state
+onCommit action = do
+	state <- getState
+	liftSTM $ modifyTVar (stateOnCommit state) (>>action)
 
 getState :: Updater State
 getState = Updater $ \restCalc state -> restCalc state state
@@ -118,15 +108,16 @@ getState = Updater $ \restCalc state -> restCalc state state
 -- Runs everything below it everytime its input signal is updated. 
 getEvent :: Signal a -> Updater a
 getEvent signal =  Updater $ \restCalc state->  do 
-	cleanupHelper <- newCleanupHelper (stateCleanup state)
+--	cleanupHelper <- newCleanupHelper (stateCleanup state)
 	let listener value = do
-		innerCleanupSignal <- cleanupHelper
+		(cleanupButton, cleanupSignal) <- liftSTM $newSignal
+		liftSTM $ addSingletonListener signal (\value -> cleanupButton ())
 		state' <-getState
-		liftSTM $ restCalc value (state' { stateCleanup =  innerCleanupSignal })
+		liftSTM $ restCalc value (state' { stateCleanup =  cleanupSignal })
 		return ()
 
 	removeListener <- addListener signal listener
-	_ <- addListener (stateCleanup state) (const $ liftSTM removeListener)
+	_ <- addSingletonListener (stateCleanup state) (const $ liftSTM removeListener)
 	return ()
 
 -- |
@@ -185,36 +176,32 @@ instance Applicative Updater where
  		updater restCalc state = do
  			(buttonF, signalF) <- newSignal
  			(buttonX, signalX) <- newSignal
- 			cleanupHelper <- newCleanupHelper (stateCleanup state)
- 			let fire = do
-				cleanupSignal <- cleanupHelper
- 				f' <- liftSTM $ getValue signalF
- 				x' <- liftSTM $ getValue signalX
- 				case (f',x') of
-					 (Just f, Just a) ->  do
-						 state' <- getState 
-						 liftSTM $ restCalc (f a) (state' { stateCleanup = cleanupSignal })
- 					 _ -> return ()
- 			runUpdater' (updater1 >>= buttonF >> fire) (const $ const $ return ()) state
- 			runUpdater' (updater2 >>= buttonX >> fire) (const $ const $ return ()) state
+
+			runUpdater' (do
+				f <- getBehavior signalF
+				x <- getBehavior signalX
+				state' <- getState
+				liftSTM $ restCalc (f x) state'
+				) (const $ const $ return ()) state
+
+ 			runUpdater' (updater1 >>= buttonF) (const $ const $ return ()) state
+ 			runUpdater' (updater2 >>= buttonX) (const $ const $ return ()) state
  			return ()
 
 instance Alternative Updater where
-	empty = Updater $ const $ const $ return ()
+	empty = Updater $ \_ _ -> return ()
 	updater1 <|> updater2 = Updater $ updater where
-		updater end state = do
+		updater restCalc state = do
 			(button,signal) <-newSignal
-			cleanupHelper <- newCleanupHelper (stateCleanup state)
-			let fire = do
-				cleanupSignal <- cleanupHelper
-				value' <- liftSTM $ getValue signal
-				case value' of
-					 (Just value) -> do
-						state' <- getState
-						liftSTM $ end value (state' { stateCleanup = cleanupSignal })
-					 Nothing -> return ()
-			runUpdater' (updater1 >>= button >> fire) (const $ const $ return ()) state
-			runUpdater' (updater2 >>= button >> fire) (const $ const $ return ()) state
+
+			runUpdater' (do
+				event <- getEvent signal
+				state' <- getState
+				liftSTM $ restCalc event state'
+				) (const $ const $ return ()) state
+
+			runUpdater' (updater1 >>= button) (const $ const $ return ()) state
+			runUpdater' (updater2 >>= button) (const $ const $ return ()) state
 			return ()
 
 instance Monad Updater where
