@@ -51,8 +51,8 @@ bandit rng = do
 	creditButton 0
 	
 	let
-		getRandomInt1to4 :: Updater Int
-		getRandomInt1to4 = do
+		getRandomInt :: Updater Int
+		getRandomInt = do
 			rng' <- getValue randomSignal
 			let ( ret, nextRng) = randomR (1,9) $ fromMaybe rng rng'
 			randomButton nextRng
@@ -93,7 +93,7 @@ bandit rng = do
 		when (credit <= 0) (putLine "Not enough credit" >> stop)
 		creditButton (credit - 1)
 		
-		numbers <- replicateM 3 getRandomInt1to4
+		numbers <- replicateM 3 getRandomInt
 		putLine "Your Numbers are:"
 		putLine $ show numbers
 
