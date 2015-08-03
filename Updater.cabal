@@ -1,5 +1,5 @@
 Name:	Updater
-Version:	0.1
+Version:	0.2
 Cabal-Version:	>= 1.6
 License:	Apache-2.0
 License-File:	LICENSE
@@ -22,4 +22,4 @@ Library
 source-repository this
   type:        git
   location:    https://github.com/yokto/Updater.git
-  tag: 0.1
+  tag: 0.2
