@@ -122,7 +122,7 @@ getCleanup :: Updater (Signal ())
 getCleanup = fmap stateCleanup getState
 
 -- |
--- doesn't really work yet
+-- is executed right before getEvent ... fire the next event
 onCleanup :: Updater () -> Updater ()
 onCleanup cleanup = do
 	cleanupE <- getCleanup

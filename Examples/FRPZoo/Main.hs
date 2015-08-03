@@ -30,8 +30,8 @@ main = do
 		run0 = do
 			isOn <-getBehavior toggle0
 			if not isOn
-			   then writeSignal output0 (-1)
-			   else do
+				then writeSignal output0 (-1)
+				else do
 			count <- newSignal 0
 			-- the <|> return () is here so the output get's updated when
 			-- toggle0 has changed but inc0 was not clicked yet
@@ -43,8 +43,8 @@ main = do
 			count <- newSignal 0
 			isOn <- getBehavior toggle5
 			if not isOn
-			   then writeSignal output5 (-1)
-			   else do
+				then writeSignal output5 (-1)
+				else do
 			(getEvent inc5 >> modifySignal count (+1)) <|> return ()
 			readSignal count >>= writeSignal output5
 
