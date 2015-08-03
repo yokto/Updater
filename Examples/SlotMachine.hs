@@ -40,55 +40,48 @@ bandit :: StdGen -> Updater ()
 bandit rng = do	
 
 	-- make all the signals
-	(lineButton, lineSignal) <- newSignal Nothing
-	(creditButton, creditSignal) <- newSignal (Just 0)
-	(coinButton, coinSignal) <- newSignal Nothing
-	(playButton, playSignal) <- newSignal Nothing
-	(quitButton, quitSignal) <- newSignal Nothing
-	(randomButton, randomSignal) <- newSignal (Just rng)
-
-	-- initialize credit and random number generator
+	lineE <- newSignal ""
+	creditB <- newSignal 0
+	coinE <- newSignal ()
+	playE <- newSignal ()
+	quitB <- newSignal False
+	rngB <- newSignal rng
 	
 	let
 		getRandomInt :: Updater Int
 		getRandomInt = do
-			(Just rng) <- getValue randomSignal
+			rng <- readSignal rngB
 			let ( ret, nextRng) = randomR (1,9) $ rng
-			randomButton nextRng
+			writeSignal rngB nextRng
 			return ret
 
 	-- parse the input
 	local $ do
-		line <- getEvent lineSignal
+		line <- getEvent lineE
 		case line of
-			 --executing ****Button () will just trigger an event in the corresponting signal
-			 "coin" -> coinButton ()
-			 "c" -> coinButton()
-			 "play" -> playButton ()
-			 "p" -> playButton ()
-			 "quit" -> quitButton ()
-			 "q" -> quitButton ()
+			 -- will just trigger an event in the corresponting signal
+			 "coin" -> writeSignal coinE ()
+			 "c" -> writeSignal coinE ()
+			 "play" -> writeSignal playE ()
+			 "p" -> writeSignal playE ()
+			 "quit" -> writeSignal quitB True
+			 "q" -> writeSignal quitB True
 			 _ -> onCommit help
 
 	-- coin event
 	local $ do
-		-- important: use getBehaviour that we will get the initial value
-		credit <- getBehavior creditSignal
-		-- here we use getEvent because the coin is an event and there is no initial value
-		getEvent coinSignal
-		-- the execution will only come here when coinSignal is fired because we used getEvent
-		-- there fore the press of creditButton will not create a loop
-		creditButton (credit + 1)
+		getEvent coinE
+		modifySignal creditB (+ 1)
 
 	-- credit change
 	local $ do
-		credit <- getEvent creditSignal
+		credit <- getEvent creditB
 		onCommit $ putStrLn $ "credit " ++ show credit
 
 	-- play
 	local $ do
-		credit <- getBehavior creditSignal
-		getEvent playSignal
+		getEvent playE
+		credit <- readSignal creditB
 		when (credit <= 0) (putLine "Not enough credit" >> stop)
 
 		numbers <- replicateM 3 getRandomInt
@@ -100,7 +93,7 @@ bandit rng = do
 			 2 -> putLine "** Double Win **\nYou get 3 coins" >> return 3
 			 _ -> putLine "You lose. Better luck next time" >> return (-1)
 
-		withValue creditSignal $ \credit' -> creditButton (credit' + gain)
+		modifySignal creditB (+ gain)
 		return ()
 
 
@@ -109,9 +102,9 @@ bandit rng = do
 		hFlush stdout
 		line <- getLine
 		quit <- runUpdater $ do
-			lineButton line -- TODODODODO
-			getValue quitSignal
-		when (isNothing quit) loop
+			writeSignal lineE line -- TODO
+			readSignal quitB
+		when (not quit) loop
 
 
 	putLine "Welcome to the One Armed Bandit"
@@ -119,7 +112,9 @@ bandit rng = do
 	-- onCleanup doesn't currently work
 	-- onCleanup $  quitButton ()
 	
-	getBehavior quitSignal
+	-- if False, monadic fail will be executed
+	-- which is the same as stop
+	True <- getBehavior quitB
 	putLine "We are sorry to see you go"
 	return ()
 

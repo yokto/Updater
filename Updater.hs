@@ -3,7 +3,8 @@ module Updater (
 	-- * Signals
  	Signal(),
  	newSignal,
- 	getValue,
+ 	writeSignal,
+	readSignal,
 -- 	addListener,
 	-- * Updater Monad
 	Updater(),
@@ -13,17 +14,23 @@ module Updater (
 	onCleanup,
 	-- * Helpers
 	stop,
+	modifySignal,
 	getBehavior,
 	local,
 	liftSTM,
-	putLine,
-	withValue
+	putLine
 	) where
 
 import Control.Applicative
-import Updater.Internal hiding (getValue)
+import Updater.Internal hiding (newSignal, readSignal)
 import qualified Updater.Internal as Internal
 
+-- |
+-- Creates a new signal. You can use this signal in any
+-- context you want and share it freely between any
+-- number of different Updater monads.
+newSignal :: a -> Updater (Signal a)
+newSignal = liftSTM . Internal.newSignal
 
 -- |
 -- Just a synonym for `empty` from `Alternative`.
@@ -54,16 +61,10 @@ local computation = return () <|> (computation >> stop)
 
 -- |
 -- Gets the current value.
--- Return Nothing if the signal is uninitialized.
-getValue :: Signal a -> Updater (Maybe a)
-getValue = liftSTM . Internal.getValue
+readSignal :: Signal a -> Updater a
+readSignal = liftSTM . Internal.readSignal
 
 -- |
--- Just a quick way of doing something with a 
--- value. If the signal is not initialized it will do nothing
-withValue :: Signal a -> (a -> Updater b) -> Updater (Maybe b)
-withValue signal function = do
-	valMay <- getValue signal
-	case valMay of
-		 (Just val) -> Just <$> function val
-		 Nothing -> return Nothing
+-- simple combination of readSignal and writeSignal
+modifySignal :: Signal a -> (a -> a) -> Updater ()
+modifySignal s f = readSignal s >>= writeSignal s . f
