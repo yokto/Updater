@@ -25,7 +25,7 @@ help = mapM_ putStrLn $
     "":
     []
 
--- State of the reels, consisting of three numbers from 1-4. Example: "222"
+-- State of the reels, consisting of three numbers from 1-9. Example: "222"
 type Reels = (Int,Int,Int)
 -- A win consist of either double or triple numbers
 data Win = Double | Triple
@@ -109,13 +109,9 @@ bandit rng = do
 
 	putLine "Welcome to the One Armed Bandit"
 	onCommit (forkIO loop >> return ())
-	-- onCleanup doesn't currently work
-	-- onCleanup $  quitButton ()
 	
 	-- if False, monadic fail will be executed
 	-- which is the same as stop
 	True <- getBehavior quitB
 	putLine "We are sorry to see you go"
 	return ()
-
-test = putStrLn "hello" >> hFlush stdout

@@ -2,6 +2,7 @@ module Updater.Internal (
  	-- Signals
  	Signal(),
  	newSignal,
+	newSignalIO,
  	writeSignal,
 	readSignal,
  	addListener,
@@ -43,6 +44,14 @@ newSignal a = do
 	listeners <- List.empty
 	return (Signal value listeners)
 
+newSignalIO :: a -> IO (Signal a)
+newSignalIO a = do
+	value <- newTVarIO a
+	listeners <- List.emptyIO
+	return (Signal value listeners)
+	
+
+
 readSignal :: Signal a -> STM a
 readSignal signal = readTVar $ signalValue signal
 
@@ -57,10 +66,12 @@ readSignal signal = readTVar $ signalValue signal
 -- writing the one single variable.
 writeSignal :: Signal a -> a -> Updater ()
 writeSignal (Signal valueVar listeners) value = do
-	-- TODO: check if list should be read just before execution
-	listeners' <- liftSTM $ List.toList listeners
 	liftSTM $ writeTVar valueVar value
-	onCommitUpdater $ mapM_ ($ value) listeners'
+	onCommitUpdater $ liftSTM (List.start listeners) >>= recursion where
+		recursion Nothing = return ()
+		recursion (Just node) = do
+			List.value node value :: Updater ()
+			liftSTM (List.next node) >>= recursion
 
 -- |
 -- executes listeners immediately.
@@ -114,8 +125,9 @@ getCleanup = fmap stateCleanup getState
 -- doesn't really work yet
 onCleanup :: Updater () -> Updater ()
 onCleanup cleanup = do
-	getCleanup >>= getEvent
-	cleanup
+	cleanupE <- getCleanup
+	liftSTM $ addSingletonListener cleanupE (const $ cleanup)
+	return ()
 
 -- |
 -- IO actions given here will be executed once a signal update
@@ -133,39 +145,34 @@ onCommitUpdater action = do
 getState :: Updater State
 getState = Updater $ \restCalc state -> restCalc state state
 
+putState :: State -> Updater ()
+putState state = Updater $ \restCalc _ -> restCalc () state
+
 -- |
 -- Runs everything below it everytime its input signal is updated. 
 getEvent :: Signal a -> Updater a
 getEvent signal =  Updater $ \restCalc state->  do
-	cleanupActionVar <- newTVar (return ()) :: STM (TVar (Updater ()))
-
-	let cleaner = do
-		cleanupAction <- liftSTM $ readTVar cleanupActionVar
-		cleanupAction
-
-	let listener value = do
-		cleaner
-		cleanupSignal <- liftSTM $ newSignal ()
-		liftSTM $ writeTVar cleanupActionVar (writeSignalNow cleanupSignal ())
-		state' <-getState
-		liftSTM $ restCalc value (state' { stateCleanup =  cleanupSignal })
-		return ()
-
-
-
-	removeListener <- addListener signal listener
-	addSingletonListener
-		(stateCleanup state)
-		(const $ cleaner >> liftSTM removeListener)
+	cleanupE <- newSignal ()
+	removeListener <- addListener signal
+		(\value -> do
+			writeSignalNow cleanupE ()
+			state' <- getState
+			liftSTM $ restCalc value (state' { stateCleanup = cleanupE })
+		)
+	addSingletonListener (stateCleanup state) (const $ do
+		liftSTM removeListener
+		writeSignalNow cleanupE ()
+		)
 	return ()
 
 -- |
 -- Similar to `getEvent` except that it also fires an event immediately,
--- if the input signal is already initialized. It is implemented like this
--- 
--- >getBehavior sig = readSignal sig <|> getEvent sig
+-- with the value of the current state.
+--
+-- >getBehavior signal = liftSTM (readSignal signal) <|> getEvent signal
 getBehavior :: Signal a -> Updater a
-getBehavior sig = liftSTM (readSignal sig) <|> getEvent sig
+getBehavior signal = liftSTM (readSignal signal) <|> getEvent signal
+	
 
 -- |
 -- This will evaluate the `Updater` Monad.
@@ -240,24 +247,23 @@ instance Applicative Updater where
 
 instance Alternative Updater where
 	empty = Updater $ \_ _ -> return ()
-	updater1 <|> updater2 = Updater $ updater where
-		updater restCalc state = do
-			signal <-newSignal (error "should not be accessed")
-			cleanupSignal <- newSignal (error "should not be accessed")
+	updater1 <|> updater2 =Updater $ \restCalc state -> do
+		signal <-newSignal (error "should not be accessed")
+		cleanupSignal <- newSignal (error "should not be accessed")
 
-			runUpdater' (do
-				-- we don't want the next line to get cleaned up before
-				-- both updates have had a chance to fire the initial signal
-				event <- getEvent signal
-				state' <- getState
-				liftSTM $ restCalc event state'
-				) (const $ const $ return ()) state { stateCleanup = cleanupSignal }
+		runUpdater' (do
+			-- we don't want the next line to get cleaned up before
+			-- both updates have had a chance to fire the initial signal
+			event <- getEvent signal
+			state' <- getState
+			liftSTM $ restCalc event state'
+			) (const $ const $ return ()) state
 
-			runUpdater' (updater1 >>= writeSignal signal) (const $ const $ return ()) state
-			runUpdater' (updater2 >>= writeSignal signal) (const $ const $ return ()) state
+		runUpdater' (updater1 >>= writeSignalNow signal) (const $ const $ return ()) state
+		runUpdater' (updater2 >>= writeSignalNow signal) (const $ const $ return ()) state
 			
-			addSingletonListener (stateCleanup state) (writeSignalNow cleanupSignal)
-			return ()
+		addSingletonListener (stateCleanup state) (writeSignalNow cleanupSignal)
+		return ()
 
 instance Monad Updater where
 	(Updater giveMeNext) >>= valueToNextUpd = Updater $ updater where
