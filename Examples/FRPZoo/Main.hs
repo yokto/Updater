@@ -58,7 +58,7 @@ main = do
 				else do
 			readSignal count >>= writeSignal output10
 
-	runGlobalUpdater ((run0 <|> run5 <|> run10) >> stop)
+	runGlobalUpdater $ run0 <|> run5 <|> run10
 
 	-- START BOILER PLATE
 	let

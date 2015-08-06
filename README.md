@@ -65,15 +65,18 @@ Of course I don't have a complete semantic of the framework but this should give
 1) The only time any stm transaction (signal update) takes place is right at the start of a runUpdater call.
    Any later updates, that appear to happen in a runUpdater call, usually happen because runUpdater is also
    executed in an other thread that is waiting for an external signal. Such as TODO.
+
 2) When executing updating a signal using it's button, the value is changed immediately and can be querried using
    getValue. However any variables previously aquiered by getEvent will still be at their old value.
    As soon as all listeners to the current value are finnished running, they will run with the new value.
    In the following example this should ensure that the action is executed  all values of x and y exactly once.
-    do
-        x <- getEvent signalX
-        y <- getEvent signalY
-        action x y
+       do
+           x <- getEvent signalX
+           y <- getEvent signalY
+           action x y
+
 3) Any io actions scheduled via onCommit will run as soon as all stm actions in a runUpdater have been commited.
    They are run in the order in which they are given in the Updater monad or parallel if in the case of Alternative for instance.
    runUpdater will only return once all io actions have completed.
+
 4) todo exception handling

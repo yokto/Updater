@@ -20,7 +20,8 @@ module Updater (
 	local,
 	liftSTM,
 	putLine,
-	runGlobalUpdater
+	runGlobalUpdater,
+	stateful
 	) where
 
 import Control.Concurrent
@@ -89,4 +90,20 @@ globalUpdater = unsafePerformIO $ do
 		currentUpdater
 		stop
 	return s
-	
+
+getSignal :: Updater a -> Updater (Signal a)
+getSignal updater = do
+	signal <- newSignal (error "uninitialized Signal")
+	local $ updater >>=writeSignal signal
+	return signal
+
+-- the reason it's type is not
+-- > (Signal a -> Updater a) -> Updater a
+-- is because this way state can be updated
+-- more frequently than res
+stateful :: (Signal state -> Updater (Updater state, res)) -> Updater res
+stateful f= do
+	signal <- newSignal (error "undefined")
+	(state,res) <- f signal
+	local $ state >>= writeSignal signal
+	return res

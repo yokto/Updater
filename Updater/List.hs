@@ -3,7 +3,7 @@
 {-# LANGUAGE BangPatterns #-}
 module Updater.List where
 
-import Control.Concurrent.STM
+import Data.IORef
 import Data.Maybe (isJust, isNothing)
 import System.IO (fixIO)
 
@@ -44,7 +44,7 @@ data Node a
             -- ^ 'Nothing' if this is the list head.
         }
 
-type NodePtr a = TVar (Node a)
+type NodePtr a = IORef (Node a)
 
 instance Eq (Node a) where
     a == b = nodeNext a == nodeNext b
@@ -56,91 +56,82 @@ value node = case nodeValue node of
                  Nothing -> error "LinkedList.value: list head"
 
 -- | /O(1)/. Is the list empty?
-null :: LinkedList a -> STM Bool
+null :: LinkedList a -> IO Bool
 null (LinkedList list_head) = do
-    first <- readTVar $ nodeNext list_head
+    first <- readIORef $ nodeNext list_head
     return $ isNothing $ nodeValue first
 
 -- | /O(n)/. Count the number of items in the list.
-length :: LinkedList a -> STM Int
+length :: LinkedList a -> IO Int
 length (LinkedList list_head) = foldlHelper (\a _ -> a + 1) 0 nodeNext list_head
 
 -- | /O(1)/. Create an empty linked list.
-empty :: STM (LinkedList a)
+empty :: IO (LinkedList a)
 empty = do
-    prev_ptr <- newTVar undefined
-    next_ptr <- newTVar undefined
+    prev_ptr <- newIORef undefined
+    next_ptr <- newIORef undefined
     let node = Node prev_ptr next_ptr Nothing
-    writeTVar prev_ptr node
-    writeTVar next_ptr node
-    return $ LinkedList node
-
--- | /O(1)/. Version of 'empty' that can be used in the 'IO' monad.
-emptyIO :: IO (LinkedList a)
-emptyIO = do
-    node <- fixIO $ \node -> do
-        prev_ptr <- newTVarIO node
-        next_ptr <- newTVarIO node
-        return (Node prev_ptr next_ptr Nothing)
+    writeIORef prev_ptr node
+    writeIORef next_ptr node
     return $ LinkedList node
 
 -- | Insert a node between two adjacent nodes.
-insertBetween :: a -> Node a -> Node a -> STM (Node a)
+insertBetween :: a -> Node a -> Node a -> IO (Node a)
 insertBetween v left right = do
-    prev_ptr <- newTVar left
-    next_ptr <- newTVar right
+    prev_ptr <- newIORef left
+    next_ptr <- newIORef right
     let node = Node prev_ptr next_ptr (Just v)
-    writeTVar (nodeNext left) node
-    writeTVar (nodePrev right) node
+    writeIORef (nodeNext left) node
+    writeIORef (nodePrev right) node
     return node
 
 -- | /O(1)/. Add a node to the beginning of a linked list.
-prepend :: a -> LinkedList a -> STM (Node a)
+prepend :: a -> LinkedList a -> IO (Node a)
 prepend v (LinkedList list_head) = do
-    right <- readTVar $ nodeNext list_head
+    right <- readIORef $ nodeNext list_head
     insertBetween v list_head right
 
 -- | /O(1)/. Add a node to the end of a linked list.
-append :: a -> LinkedList a -> STM (Node a)
+append :: a -> LinkedList a -> IO (Node a)
 append v (LinkedList list_head) = do
-    left <- readTVar $ nodePrev list_head
+    left <- readIORef $ nodePrev list_head
     insertBetween v left list_head
 
 -- | /O(1)/. Insert an item before the given node.
-insertBefore :: a -> Node a -> STM (Node a)
+insertBefore :: a -> Node a -> IO (Node a)
 insertBefore v node = do
-    left <- readTVar $ nodePrev node
+    left <- readIORef $ nodePrev node
     if left == node && isJust (nodeValue node)
         then error "LinkedList.insertBefore: node removed from list"
         else insertBetween v left node
 
 -- | /O(1)/. Insert an item after the given node.
-insertAfter :: a -> Node a -> STM (Node a)
+insertAfter :: a -> Node a -> IO (Node a)
 insertAfter v node = do
-    right <- readTVar $ nodeNext node
+    right <- readIORef $ nodeNext node
     if right == node && isJust (nodeValue node)
         then error "LinkedList.insertAfter: node removed from list"
         else insertBetween v node right
 
 -- | /O(1)/. Remove a node from whatever 'LinkedList' it is in.  If the node
 -- has already been removed, this is a no-op.
-delete :: Node a -> STM ()
+delete :: Node a -> IO ()
 delete node
     | isNothing (nodeValue node) =
         error "LinkedList.delete: list head"
     | otherwise = do
-        left <- readTVar $ nodePrev node
-        right <- readTVar $ nodeNext node
-        writeTVar (nodeNext left) right
-        writeTVar (nodePrev right) left
+        left <- readIORef $ nodePrev node
+        right <- readIORef $ nodeNext node
+        writeIORef (nodeNext left) right
+        writeIORef (nodePrev right) left
 
         -- Link list node to itself so subsequent 'delete' calls will be harmless.
-        writeTVar (nodePrev node) node
-        writeTVar (nodeNext node) node
+        writeIORef (nodePrev node) node
+        writeIORef (nodeNext node) node
 
-stepHelper :: (Node a -> NodePtr a) -> Node a -> STM (Maybe (Node a))
+stepHelper :: (Node a -> NodePtr a) -> Node a -> IO (Maybe (Node a))
 stepHelper step node = do
-    node' <- readTVar $ step node
+    node' <- readIORef $ step node
     if node' == node
         then return Nothing
         else case nodeValue node' of
@@ -149,22 +140,22 @@ stepHelper step node = do
 
 -- | /O(1)/. Get the previous node.  Return 'Nothing' if this is the first item,
 -- or if this node has been 'delete'd from its list.
-prev :: Node a -> STM (Maybe (Node a))
+prev :: Node a -> IO (Maybe (Node a))
 prev = stepHelper nodePrev
 
 -- | /O(1)/. Get the next node.  Return 'Nothing' if this is the last item,
 -- or if this node has been 'delete'd from its list.
-next :: Node a -> STM (Maybe (Node a))
+next :: Node a -> IO (Maybe (Node a))
 next = stepHelper nodeNext
 
 -- | /O(1)/. Get the node corresponding to the first item of the list.  Return
 -- 'Nothing' if the list is empty.
-start :: LinkedList a -> STM (Maybe (Node a))
+start :: LinkedList a -> IO (Maybe (Node a))
 start = next . listHead
 
 -- | /O(1)/. Get the node corresponding to the last item of the list.  Return
 -- 'Nothing' if the list is empty.
-end :: LinkedList a -> STM (Maybe (Node a))
+end :: LinkedList a -> IO (Maybe (Node a))
 end = prev . listHead
 
 -- | Traverse list nodes with a fold function.  The traversal terminates when
@@ -175,20 +166,20 @@ foldlHelper :: (a -> b -> a)            -- ^ Fold function
             -> a                        -- ^ Initial value
             -> (Node b -> NodePtr b)    -- ^ Step function ('nodePrev' or 'nodeNext')
             -> Node b                   -- ^ Starting node.  This node's value is not used!
-            -> STM a
+            -> IO a
 foldlHelper f z nodeStep start_node =
         loop z start_node
     where
         loop !accum node = do
-            node' <- readTVar $ nodeStep node
+            node' <- readIORef $ nodeStep node
             case nodeValue node' of
                 Nothing -> return accum
                 Just v  -> loop (f accum v) node'
 
 -- | /O(n)/. Return all of the items in a 'LinkedList'.
-toList :: LinkedList a -> STM [a]
+toList :: LinkedList a -> IO [a]
 toList (LinkedList list_head) = foldlHelper (flip (:)) [] nodePrev list_head
 
 -- | /O(n)/. Return all of the items in a 'LinkedList', in reverse order.
-toListRev :: LinkedList a -> STM [a]
+toListRev :: LinkedList a -> IO [a]
 toListRev (LinkedList list_head) = foldlHelper (flip (:)) [] nodeNext list_head
