@@ -37,25 +37,24 @@ globalLock :: MVar ()
 {-# NOINLINE globalLock #-}
 globalLock = unsafePerformIO $ newMVar ()
 
-
 --- START: SIGNALS ---
 
 -- |
 -- `Signal` is the portable Signal they can be exchanged between
 -- any parts of your program. Internally, they are just a variable and a list of 
 -- change hooks.
-data Signal a = Signal {
+data Signal s a = Signal {
 	signalValue :: IORef a,
-	signalListeners :: List.LinkedList (Weak (Signal a ,a -> IO ()))
+	signalListeners :: List.LinkedList (Weak (Signal s a ,a -> Updater s ()))
 	}
 
-newSignal :: a -> IO (Signal a)
+newSignal :: a -> IO (Signal s a)
 newSignal a = do
 	value <- newIORef a
 	listeners <- List.empty
 	return (Signal value listeners)
 
-readSignal :: Signal a -> IO a
+readSignal :: Signal s a -> IO a
 readSignal signal = readIORef $ signalValue signal
 
 -- |
@@ -67,14 +66,14 @@ readSignal signal = readIORef $ signalValue signal
 -- So you are guaranteed that writeSignal will
 -- not have any immediate sideffects other then
 -- writing the one single variable.
-writeSignal :: Signal a -> a -> IO ()
+writeSignal :: Signal s a -> a -> Updater s ()
 writeSignal (Signal valueVar listeners) value = do
-	writeIORef valueVar value
-	(List.start listeners) >>= recursion where
+	liftIO $ writeIORef valueVar value
+	(liftIO $ List.start listeners) >>= recursion where
 		recursion Nothing = return ()
 		recursion (Just node) = do
-			next <- List.next node
-			res <- deRefWeak $ List.value node
+			next <- liftIO $ List.next node
+			res <- liftIO $ deRefWeak $ List.value node
 			case res of
 				 (Just (_,listener)) -> listener value
 				 _ -> return ()
@@ -86,13 +85,13 @@ writeSignal (Signal valueVar listeners) value = do
 -- collected the listener will be removed.
 -- any references from the listener to the
 -- remover don't count.
-addListener :: Signal a -> (a -> IO ()) -> IO (IO ())
+addListener :: Signal s a -> (a -> Updater s ()) -> IO (IO ())
 addListener signal listener = do
 	weakRef <- newIORef (error "should not be readable")
 	node <- List.append (unsafePerformIO $ readIORef weakRef) (signalListeners signal)
 	let !remove = List.delete node
 	weak <- mkWeak remove (signal, listener) $ Just $ do
-		print "halo"
+		print "cleaning up signal"
 		remove
 	writeIORef weakRef weak
 	return remove
@@ -103,13 +102,13 @@ data DownState = DownState {
 	}
 
 data UpState s = UpState {
-	stateOnCleanup :: IO [Updater s ()],
+	stateOnCleanup :: IO (),
 	stateOnDone :: [Updater s ()]
 	}
 
 instance Monoid (UpState s) where
-	mempty = UpState (return []) []
-	(UpState c1 d1) `mappend` (UpState c2 d2) = UpState ((++) <$> c1 <*> c2) ((++) d1 d2)
+	mempty = UpState (return ()) []
+	(UpState c1 d1) `mappend` (UpState c2 d2) = UpState (c1 >> c2) (d1 ++ d2)
 
 -- |
 -- This monad works very similar to a continuation monad on top of stm.
@@ -126,6 +125,9 @@ newtype Updater s a = Updater {
 	runUpdater' :: (a -> DownState -> IO (UpState s)) -> DownState -> IO (UpState s)
 	}
 
+data RealWorld
+
+type UpdaterIO = Updater RealWorld
 
 -- -- |
 -- -- Runs everything below it everytime its input signal is updated. 
@@ -149,20 +151,6 @@ newtype Updater s a = Updater {
 -- 	state <- getState
 -- 	liftSTM $ modifyIORef (stateOnCommitUpdater state) (action:)
 
-runCleanupState :: UpState s -> IO (UpState s)
-runCleanupState upstate = do
-	onDoes <- stateOnCleanup upstate
-	return $ upstate {
-		stateOnCleanup = return [],
-		stateOnDone = stateOnDone upstate ++ onDoes
-		}
-
-runCleanup :: Updater s a -> IO ([Updater s ()])
-runCleanup (Updater giveMeNext) = do
-	upState <- giveMeNext (const $ const $ return mempty) $ DownState {}
-	onDoes <- stateOnCleanup upState
-	return (stateOnDone upState ++ onDoes)
-
 -- returnDone :: Updater a -> Updater a
 -- returnDone (Updater giveMeRest) = Updater $ \restCalc _ ->
 -- 	return (UpState  {
@@ -173,45 +161,35 @@ runCleanup (Updater giveMeNext) = do
 -- 		})
 
 -- |
--- is executed right before getEvent ... fire the next event
-returnEnd :: a -> Updater s a
-returnEnd val = Updater $ \restCalc downState -> return $ UpState {
-	stateOnDone = [],
-	stateOnCleanup = do
-		upState <- restCalc val downState
-		stateOnDone <$> runCleanupState upState
+-- executes rest after everything else
+delay :: Updater s ()
+delay = Updater $ \restCalc downState -> return $ UpState {
+	stateOnCleanup = return (),
+	stateOnDone = [Updater $ \restCalc' downState' -> restCalc () downState']
 	}
 
--- |
--- is executed right before getEvent ... fire the next event
-returnDone :: a -> Updater s a
-returnDone val = Updater $ \restCalc downState -> return $ UpState {
-	stateOnCleanup = return [],
-	stateOnDone = [Updater $ \restCalc' downState' -> restCalc val downState']
-	}
-
-newEvent :: Updater a -> Updater (Updater a)
+newEvent :: Updater s a -> Updater s (Updater s a)
 newEvent updater = Updater $ \restCalc downState->  do
 	signal <- newSignal (error "unreadable")
-	cleanupVar <- newIORef $ return ()
-	doneVar <- newIORef $ return ()
-	return () <|> do
-		res <- updater
-		liftIO $ writeSignal signal res
-		addOnDone 
-		empty
-	restCalc (Updater $ \restCalc2 state2 -> do
+	upstate <- restCalc (Updater $ \restCalc2 _ -> do
 		removeListener <- addListener signal
-			(\value -> do
-				c <- stateOnCleanup <$> readIORef upStateVar
-				c
-				upState2 <- restCalc2 value state2 >>= writeIORef upStateVar
+			(\value -> Updater $ \_ state3 -> do
+				restCalc2 value state3
 				)
-		return (do
+		return $ mempty { stateOnCleanup = do
 			removeListener
-			join $ stateOnCleanup <$> readIORef $ upStateVar
-			)
+			}
 		) downState
+
+	return upstate {
+		stateOnDone = stateOnDone upstate ++ [ do
+			val <- updater
+			writeSignal signal val
+			]
+		}
+
+newEventIO :: IO (UpdaterIO a, a -> IO ())
+newEventIO = undefined
 	
 		
 {-
@@ -237,30 +215,45 @@ getSignalBehavior signal = liftIO (readSignal signal) <|> getSignalEvent signal-
 -- After that, it will return the result and free everything.
 -- To prevent signals from reaching the end use `Updater.stop` or `getEvent` with some exit signal.
 runUpdater :: (forall s . Updater s a) -> [a]
-runUpdater (Updater giveMeNext') = unsafePerformIO $ do
-	res <- newMVar []
+runUpdater updater = unsafePerformIO $ do
+	(res, cleanup) <- runUpdater1 updater
+	cleanup
+	return res
+
+runUpdater1 :: (Updater s a) -> IO ([a], IO ())
+runUpdater1 (Updater giveMeNext') = do
+	-- TODO: think if cleanup is really necessary
+	resVar <- newMVar []
 
 	let execOnDones (Updater giveMeNext)  = do
 		upstate <- giveMeNext (\val state ->  return mempty) DownState {}
 		cleanUps <- mapM execOnDones (stateOnDone upstate)
-		return (do
-			c1 <- stateOnCleanup upstate
-			c2 <- sequence cleanUps
-			return $ c1 ++ concat c2
-			)
-
-	let execCleanUps updater = do
-		cleanups <- execOnDones updater
-		cleanups >>= mapM_ execCleanUps
+		return (stateOnCleanup upstate >>  sequence_ cleanUps)
 
 	upstate <- giveMeNext' (\val state -> 
-			modifyMVar_ res (return . (val:)) >> return mempty) DownState {}
+			modifyMVar_ resVar (return . (val:)) >> return mempty) DownState {}
 
-	trace "hallo"$ mapM_ execCleanUps $ stateOnDone upstate
-	cleanups <- stateOnCleanup upstate
-	mapM_ execCleanUps cleanups
+	cleanup <- mapM execOnDones $ stateOnDone upstate
 
-	reverse <$> takeMVar res
+	res <- takeMVar resVar
+	return (reverse res, stateOnCleanup upstate >> sequence_ cleanup)
+
+
+newtype UpdaterRest a b = UpdaterRest { runUpdaterRest :: a -> ([b], UpdaterRest a b) }
+
+-- runUpdater' :: a -> (forall s . Updater s a -> Updater s b) -> ([b], UpdaterRest a b)
+-- runUpdater' val updater' = unsafePerformIO $ initialize where
+-- 	initialize = do
+-- 		valVar <- newIORef a
+-- 		resVar <- newEmptyMVar
+-- 		block <- newMVar ()
+-- 
+-- 		forkIO $ retursion valVar resVar block
+-- -- 			modifyMVar_ res (return . (val:)) >> return mempty) DownState {}
+-- 		upstate <- giveMeNext' (\val state -> 
+-- 
+-- 	let input = Updater $ \restCalc upState -> do
+		
 
 liftIO :: IO a -> Updater s a
 liftIO run = Updater (\restCalc state -> run >>= (\x -> restCalc x state))
@@ -273,26 +266,25 @@ instance Applicative (Updater s) where
  	(Updater giveMeNext1) <*> (Updater giveMeNext2) = Updater $ \restCalc state -> do
 		varF <- newIORef Nothing
 		varX <- newIORef Nothing
-		varCleanup <- newIORef $ return []
+		varCleanup <- newIORef $ return ()
 
 		let update state' = do
 				f' <- readIORef varF
 				x' <- readIORef varX
 				case (f', x') of
 					(Just f, Just x) -> do
-						onDones <- join $ readIORef varCleanup
+						join $ readIORef varCleanup
 						upstateC <- restCalc (f x) state'
 						writeIORef varCleanup $ stateOnCleanup upstateC
 						return $ upstateC {
-							stateOnDone = onDones ++ stateOnDone upstateC,
-							stateOnCleanup = return []
+							stateOnCleanup = return ()
 							}
 					_ -> return mempty
 
 		upState1 <- giveMeNext1 (\x state' -> writeIORef varF (Just x) >> update state') state
 		upState2 <- giveMeNext2 (\x state' -> writeIORef varX (Just x) >> update state') state
 
-		return $ upState1 `mappend` upState2 `mappend` mempty {
+		return $ upState1 `mappend` upState2 `mappend` mempty { 
 			stateOnCleanup = join $ readIORef varCleanup
 			}
 
@@ -300,16 +292,15 @@ instance Alternative (Updater s) where
 	empty = Updater $ \_ _ -> return mempty
 	(Updater giveMeNext1) <|> (Updater giveMeNext2) = Updater $ \restCalc state -> do
 		var <-newIORef (error "should not be accessed")
-		varCleanup <- newIORef $ return []
+		varCleanup <- newIORef $ return ()
 
 		let update state' = do
 			val <- readIORef var
-			onDones <- join (readIORef varCleanup)
+			join (readIORef varCleanup)
 			upstate <- restCalc val state' 
 			writeIORef varCleanup $ stateOnCleanup upstate
 			return $ upstate {
-				stateOnDone = onDones ++ stateOnDone upstate,
-				stateOnCleanup = return []
+				stateOnCleanup = return ()
 				}
 
 		cleanup1 <- giveMeNext1 (\x state' -> writeIORef var x >> update state') state
