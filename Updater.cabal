@@ -12,7 +12,7 @@ Description:	Read the homepage for more information.
 Build-Type:	Simple
 
 Library
-  Build-Depends:	base >= 3 && < 5, stm
+  Build-Depends:	base >= 3 && < 5
   ghc-options:     -Wall -fno-warn-tabs
   Exposed-Modules:
     Updater

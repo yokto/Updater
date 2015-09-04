@@ -1,109 +1,72 @@
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 module Updater (
-	-- * Signals
- 	Signal(),
- 	newSignal,
-	newSignalIO,
- 	writeSignal,
-	readSignal,
--- 	addListener,
-	-- * Updater Monad
-	Updater(),
-	runUpdater,
-	getEvent,
-	onCommit,
-	onCleanup,
-	-- * Helpers
-	stop,
-	modifySignal,
-	getBehavior,
-	local,
-	liftSTM,
-	putLine,
-	runGlobalUpdater,
-	stateful
+	Event (),
+	Behavior (),
+	newEvent,
+	cacheStateful,
+	cacheStateless,
+	sample,
+	foldEvent,
+		runEvent,
+	runGlobalEvent,
+	debug,
+	debugCleanup
 	) where
 
 import Control.Concurrent
 import Control.Applicative
-import Updater.Internal hiding (newSignal, readSignal)
-import qualified Updater.Internal as Internal
+--import Control.Concurrent.MVar
+--import Data.Monoid
+import Control.Monad
+import Control.Monad.Fix
+import Updater.Internal
 import System.IO.Unsafe
+import Debug.Trace
+import Foreign.StablePtr
 
--- |
--- Creates a new signal. You can use this signal in any
--- context you want and share it freely between any
--- number of different Updater monads.
-newSignal :: a -> Updater (Signal a)
-newSignal = liftSTM . Internal.newSignal
+newEvent :: IO (Event a, a -> IO ())
+newEvent = do
+	(ev,button) <- newEvent'
+	return (Event ev, button)
 
--- |
--- Just a synonym for `empty` from `Alternative`.
--- It basically prevents signals from ever progressing beyond this point.
--- You can use this to make a filter for instance
---
--- >when (condition) stop
-stop :: Updater a
-stop = empty
+cacheStateless :: Event a -> Behavior (Event a)
+cacheStateless (Event u) = Behavior (Event `fmap` cacheStateless' u)
 
--- |
--- Just for some quick debugging
---
--- >putLine = onCommit . putStrLn
-putLine :: String -> Updater ()
-putLine = onCommit . putStrLn
+cacheStateful :: Event a -> Behavior (Event a)
+cacheStateful (Event d) = Behavior (Event `fmap` cacheStateful' d)
 
--- |
--- Returns immediately after registering the given computation.
--- However, events from inside will not spread outside, except for
--- the initial one.
---
--- It is implemented like this
---
--- >local computation = return () <|> (computation >> stop)
-local :: Updater a -> Updater ()
-local computation = return () <|> (computation >> stop)
+sample :: Behavior a -> Event a
+sample (Behavior c) = Event c
 
--- |
--- Gets the current value.
-readSignal :: Signal a -> Updater a
-readSignal = liftSTM . Internal.readSignal
+runEvent :: Event (Either (IO ()) res) -> IO res
+runEvent (Event u) = runUpdater u
 
--- |
--- simple combination of readSignal and writeSignal
-modifySignal :: Signal a -> (a -> a) -> Updater ()
-modifySignal s f = readSignal s >>= writeSignal s . f
+-- | 
+-- This can be implemented using mfix, cacheStateful, ...
+-- 
+-- if you get into trouble and really need multiple recursively defined
+-- you can use mfix to do that.
+foldEvent :: (b -> a -> b) -> b -> Event a -> Event b
+foldEvent f b updater = join $ sample $ (mfix $ \discrete -> cacheStateful $ return b <|> (do
+	updater' <- sample $ cacheStateless updater
+	--sample $ debug "folding 1"
+	b' <- discrete
+	--sample $ debug $ "folding 2 " ++ show b'
+	a' <- updater'
+	--sample $ debug $ "folding 3 " ++ show a'
+	return (f b' a'))
+	)
 
 -- |
 -- this is just a convenience for use in ghci
 -- and in the test cases. It will just run
 -- the updater it is given in it's own thread.
-runGlobalUpdater :: Updater a -> IO ()
-runGlobalUpdater u = runUpdater $ writeSignal globalUpdater (u >> return ())
-
-globalUpdater :: Signal (Updater ())
-{-# NOINLINE globalUpdater #-}
-globalUpdater = unsafePerformIO $ do
-	s <- newSignalIO $ return ()
-	forkIO $ runUpdater $ do
-		currentUpdater <-getBehavior s
-		currentUpdater
-		stop
-	return s
-
-getSignal :: Updater a -> Updater (Signal a)
-getSignal updater = do
-	signal <- newSignal (error "uninitialized Signal")
-	local $ updater >>=writeSignal signal
-	return signal
-
--- the reason it's type is not
--- > (Signal a -> Updater a) -> Updater a
--- is because this way state can be updated
--- more frequently than res
-stateful :: (Signal state -> Updater (Updater state, res)) -> Updater res
-stateful f= do
-	signal <- newSignal (error "undefined")
-	(state,res) <- f signal
-	local $ state >>= writeSignal signal
-	return res
+runGlobalEvent :: Event (IO ()) -> IO ()
+{-# NOINLINE runGlobalEvent #-}
+runGlobalEvent = unsafePerformIO $ do
+	_ <- newStablePtr runGlobalEvent
+	(ev, button) <- newEvent :: IO (Event (Event (IO ())), Event (IO ()) -> IO ())
+	var <- newEmptyMVar
+	_ <- forkIO $ (runEvent $ sample (onCommit (putMVar var ())) >> Left `fmap` join ev)
+	takeMVar var
+	return button
