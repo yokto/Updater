@@ -254,10 +254,10 @@ runUpdater (Updater giveMeNext) = do
 		giveMeNext (\val _ -> do
 			resMay <-isEmptyMVar resVar
 			if resMay
-			then case val of
+				then case val of
 					(Left io) -> return mempty { stateOnCommit = io }
 					(Right res) -> putMVar resVar res >> return mempty
-			else return mempty
+				else return mempty
 			) DownState {}
 
 	stateOnCommit upState
