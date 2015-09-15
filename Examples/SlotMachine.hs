@@ -1,120 +1,102 @@
--- -- reimplementation from reactive-banana example
--- -- by HeinrichApfelmus
--- module Main where
--- 
--- import Updater
--- 
--- import System.Random
--- import System.IO
--- import Control.Concurrent
--- import Data.Maybe
--- import Control.Monad
--- import Data.List (nub)
--- 
--- 
--- help :: IO ()
--- help = mapM_ putStrLn $
---     "-----------------------------":
---     "- THE REACTIVE SLOT MACHINE -":
---     "------ WIN A BANANA ---------":
---     "":
---     "Commands are:":
---     "   c(oin)    - insert a coin":
---     "   p(lay)    - play one game":
---     "   q(uit)    - quit the program":
---     "":
---     []
--- 
--- -- State of the reels, consisting of three numbers from 1-9. Example: "222"
--- type Reels = (Int,Int,Int)
--- -- A win consist of either double or triple numbers
--- data Win = Double | Triple
--- 
--- main :: IO ()
--- main = do
--- 	rng <- newStdGen
--- 	(line, lineTrigger) <- newEventIO
--- 
--- 	let loop = do
--- 		putStr "> "
--- 		hFlush stdout
--- 		line <- getLine
--- 		quit <- runUpdater $ do
--- 			writeSignal lineE line -- TODO
--- 			readSignal quitB
--- 		when (not quit) loop
--- 
--- 	threadId <- forkIO loop
--- 
--- 	runEvent (bandit rng line) >> killThread threadId
--- 
--- bandit :: StdGen -> Event String -> Event (Either (IO ()) ())
--- bandit rng lineE =
--- 	credit <- foldEvent (
--- 	-- parse the input
--- 	local $ do
--- 		line <- getEvent lineE
--- 		case line of
--- 			 -- will just trigger an event in the corresponting signal
--- 			 "coin" -> writeSignal coinE ()
--- 			 "c" -> writeSignal coinE ()
--- 			 "play" -> writeSignal playE ()
--- 			 "p" -> writeSignal playE ()
--- 			 "quit" -> writeSignal quitB True
--- 			 "q" -> writeSignal quitB True
--- 			 _ -> onCommit help
--- 	creditB <- newSignal 0
--- 	coinE <- newSignal ()
--- 	playE <- newSignal ()
--- 	quitB <- newSignal False
--- 	rngB <- newSignal rng
--- 	
--- 	let
--- 		getRandomInt :: Updater Int
--- 		getRandomInt = do
--- 			rng <- readSignal rngB
--- 			let ( ret, nextRng) = randomR (1,9) $ rng
--- 			writeSignal rngB nextRng
--- 			return ret
--- 
--- 
--- 	-- coin event
--- 	local $ do
--- 		getEvent coinE
--- 		modifySignal creditB (+ 1)
--- 
--- 	-- credit change
--- 	local $ do
--- 		credit <- getEvent creditB
--- 		onCommit $ putStrLn $ "credit " ++ show credit
--- 
--- 	-- play
--- 	local $ do
--- 		getEvent playE
--- 		credit <- readSignal creditB
--- 		when (credit <= 0) (putLine "Not enough credit" >> stop)
--- 
--- 		numbers <- replicateM 3 getRandomInt
--- 		putLine "Your Numbers are:"
--- 		putLine $ show numbers
--- 
--- 		gain <- case (length $ nub numbers) of
--- 			 1 -> putLine "*** Triple Win ***\nYou get 20 coins" >> return 20
--- 			 2 -> putLine "** Double Win **\nYou get 3 coins" >> return 3
--- 			 _ -> putLine "You lose. Better luck next time" >> return (-1)
--- 
--- 		modifySignal creditB (+ gain)
--- 		return ()
--- 
--- 
--- 
--- 
--- 
--- 	putLine "Welcome to the One Armed Bandit"
--- 	onCommit (forkIO loop >> return ())
--- 	
--- 	-- if False, monadic fail will be executed
--- 	-- which is the same as stop
--- 	True <- getBehavior quitB
--- 	putLine "We are sorry to see you go"
--- 	return ()
+{-# LANGUAGE RecursiveDo #-}
+-- reimplementation from reactive-banana example
+-- by HeinrichApfelmus
+module Main where
+
+import Updater
+
+import System.Random
+import System.IO
+import Control.Concurrent
+import Control.Applicative
+import Data.Maybe
+import Data.IORef
+import Control.Monad
+import Data.List (nub,intercalate)
+import Foreign.StablePtr
+
+
+helpMsg :: String
+helpMsg = intercalate "\n" $
+    "-----------------------------":
+    "- THE REACTIVE SLOT MACHINE -":
+    "------ WIN AN UPDATER ---------":
+    "":
+    "Commands are:":
+    "   coin    - insert a coin":
+    "   play    - play one game":
+    "   quit    - quit the program":
+    "":
+    []
+
+main :: IO ()
+main = do
+	(line, lineTrigger) <- newEvent
+	randomRef <- newStdGen >>= newIORef
+	let randomBehavior = unsafeLiftIO $ do
+		rng <- readIORef randomRef
+		let (random, rng') = randomR (1,9) rng
+		writeIORef randomRef rng'
+		return random
+
+	let loop = do
+		putStr "> "
+		hFlush stdout
+		line <- getLine
+		lineTrigger line
+		loop
+
+	let run = runEvent (bandit randomBehavior line)
+
+	threadId <- forkIO loop
+
+	myThreadId >>= newStablePtr
+	run >> killThread threadId
+
+bandit :: Behavior Int -> Event String -> Event (Either (IO ()) ())
+bandit random line = do
+	let
+		coin = do { "coin" <- line; return ()}
+		tryPlay = do { "play" <- line; return ()}
+		quit = do { "quit" <- line; return ()}
+		help = do { l <- line; when (elem l ["coin","play","quit"]) empty}
+
+	msg <- sample $ mdo
+		noPlay <- cacheStateless $ do
+			tryPlay
+			0 <- sample $ hold credit
+			return ()
+		play <- cacheStateless $ do
+			tryPlay
+			c <- sample $ hold credit
+			when (c == 0) empty
+		reels <- cacheStateless $ do
+			play
+			replicateM 3 $ sample random
+		let win = (<$>reels) $ \r ->  case (length $ nub r) of
+			1 -> 20
+			2 -> 3
+			3 -> 0
+ 		credit <- cacheStateful $
+ 			return 0
+ 			<|> (do
+ 				coin
+ 				c <- sample $ hold credit
+ 				return (c + 1))
+			<|> do
+				play
+				c <- sample $ hold credit
+				return (c-1)
+			<|> do
+				w <- win
+				c <- sample $ hold credit
+				return $ w + c
+		cacheStateless $
+			return "Welcome to the One Armed Bandit"
+			<|> (\c -> "Credit: " ++ show c) <$> credit
+			<|> (\r -> "Reels: " ++ show r) <$> reels
+			<|> (\w -> "You win: " ++ show w) <$> win
+			<|> ("We are sorry to see you go" <$ quit)
+			<|> (helpMsg <$ help)
+			<|> ("Not enough credit" <$ noPlay)
+	(Left . putStrLn <$>msg) <|> (Right () <$ quit)

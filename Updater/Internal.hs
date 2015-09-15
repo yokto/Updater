@@ -12,7 +12,8 @@ module Updater.Internal (
  	unsafeLiftIO,
 	debug,
 	debugCleanup,
-	onCommit
+	onCommit,
+	justOne
 	) where
 
 import Control.Concurrent.MVar
@@ -30,10 +31,6 @@ import Data.IORef
 import System.IO.Unsafe
 
 newtype Event a = Event { getEvent' :: Updater a } deriving (Functor, Applicative, Alternative, Monad)
-
-instance Monoid (Event a) where
-	mempty = empty
-	mappend = (<|>)
 
 newtype Behavior a = Behavior { getBehavior' :: Updater a } deriving (Functor, Applicative, Monad, MonadFix)
 
@@ -173,6 +170,8 @@ fixUpdater toUpdater = Updater $ \restCalc downState -> do
 	inputVar <- newEmptyMVar
 	runUpdater' (toUpdater $ unsafePerformIO $ takeMVar inputVar)
 		(\x downState2 -> do
+			empty <- isEmptyMVar inputVar
+			when (not empty) (error "continuous run twice")
 			putMVar inputVar x
 			restCalc x downState2
 			)
@@ -182,6 +181,7 @@ cacheStateful' :: Updater a -> Updater (Updater a)
 cacheStateful' updater = Updater $ \restCalc downState->  do
 	signal <- newSignal Nothing
 	cleanup <- newIORef (return ())
+
 
 	upstate1 <- restCalc (Updater $ \restCalc2 downState2 -> do
 		res <- readSignal signal
@@ -193,7 +193,7 @@ cacheStateful' updater = Updater $ \restCalc downState->  do
 				return upState' { stateOnCleanup = join $ readIORef cleanup } 
 			 Nothing -> return mempty
 		removeListener <- addListener signal (\x downState3 -> case x of
-			(Just x') -> putStrLn "restCalc2" >> restCalc2 x' downState3
+			(Just x') -> restCalc2 x' downState3
 			Nothing -> return mempty)
 		return $ upState <> mempty { stateOnCleanup = removeListener }
 		) downState
@@ -227,23 +227,25 @@ cacheStateless' updater = Updater $ \restCalc downState->  do
 			return upState { stateOnCleanup = join $ readIORef cleanup }
 			)
 		downState
+
+
 	return (upstate1 <> upstate2)
 
 newEvent' :: IO (Updater a, a -> IO ())
 newEvent' = do
 	signal <- newSignal (error "unreadable")
-	cleanupVar <- newMVar (return () :: IO ())
+	cleanupVar <- newIORef (return () :: IO ())
 	let
 		updater = Updater $ \restCalc _ -> do
 			removeListener <- addListener signal (\a downState2 -> restCalc a downState2)
 			return mempty { stateOnCleanup = removeListener }
 		button a = do
 			takeMVar globalLock
-			join $ takeMVar cleanupVar
+			join $ readIORef cleanupVar
 			upState <- writeSignal signal a (error "no down state yet")
-			stateOnCommit upState
-			putMVar cleanupVar (stateOnCleanup upState)
+			writeIORef cleanupVar (stateOnCleanup upState)
 			putMVar globalLock ()
+			stateOnCommit upState
 	return (updater, button)
 
 runUpdater :: Updater (Either (IO ()) res) -> IO res
@@ -266,7 +268,18 @@ runUpdater (Updater giveMeNext) = do
 	withGlobalLock $ stateOnCleanup upState
 	return res
 
-
+justOne :: Updater a -> Updater a
+justOne (Updater giveMeNext) = Updater $ \restCalc downState -> do
+	restVar <- newIORef restCalc
+	cleanupVar <- newIORef (return ())
+	upState' <- giveMeNext (\x downState2 -> do
+		rest <- readIORef restVar
+		writeIORef restVar (\_ _ -> return mempty)
+		upState <- rest x downState2
+		writeIORef cleanupVar $ stateOnCleanup upState
+		return upState { stateOnCleanup = return () }
+		) downState
+	return $ upState' <> mempty { stateOnCleanup = join $ readIORef cleanupVar }
 
 liftIO :: IO a -> Updater a
 liftIO run = Updater (\restCalc state -> run >>= (\x -> restCalc x state))
