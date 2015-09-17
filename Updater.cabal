@@ -20,7 +20,6 @@ Library
   Other-Modules:
     Updater.List
 
-source-repository this
+source-repository head
   type:        git
   location:    https://github.com/yokto/Updater.git
-  tag: 0.2
