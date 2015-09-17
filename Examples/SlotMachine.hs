@@ -29,30 +29,6 @@ helpMsg = intercalate "\n" $
     "":
     []
 
-main :: IO ()
-main = do
-	(line, lineTrigger) <- newEvent
-	randomRef <- newStdGen >>= newIORef
-	let randomBehavior = unsafeLiftIO $ do
-		rng <- readIORef randomRef
-		let (random, rng') = randomR (1,9) rng
-		writeIORef randomRef rng'
-		return random
-
-	let loop = do
-		putStr "> "
-		hFlush stdout
-		line <- getLine
-		lineTrigger line
-		loop
-
-	let run = runEvent (bandit randomBehavior line)
-
-	threadId <- forkIO loop
-
-	myThreadId >>= newStablePtr
-	run >> killThread threadId
-
 bandit :: Behavior Int -> Event String -> Event (Either (IO ()) ())
 bandit random line = do
 	let
@@ -100,3 +76,27 @@ bandit random line = do
 			<|> (helpMsg <$ help)
 			<|> ("Not enough credit" <$ noPlay)
 	(Left . putStrLn <$>msg) <|> (Right () <$ quit)
+
+main :: IO ()
+main = do
+	(line, lineTrigger) <- newEvent
+	randomRef <- newStdGen >>= newIORef
+	let randomBehavior = unsafeLiftIO $ do
+		rng <- readIORef randomRef
+		let (random, rng') = randomR (1,9) rng
+		writeIORef randomRef rng'
+		return random
+
+	let loop = do
+		putStr "> "
+		hFlush stdout
+		line <- getLine
+		lineTrigger line
+		loop
+
+	let run = runEvent (bandit randomBehavior line)
+
+	threadId <- forkIO loop
+
+	myThreadId >>= newStablePtr
+	run >> killThread threadId

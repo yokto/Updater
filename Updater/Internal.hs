@@ -13,7 +13,9 @@ module Updater.Internal (
 	debug,
 	debugCleanup,
 	onCommit,
-	justOne
+	justOne,
+	UpState (..),
+	DownState (..)
 	) where
 
 import Control.Concurrent.MVar
@@ -30,9 +32,13 @@ import Debug.Trace
 import Data.IORef
 import System.IO.Unsafe
 
-newtype Event a = Event { getEvent' :: Updater a } deriving (Functor, Applicative, Alternative, Monad)
+-- | Push based Updater. 
+newtype Event a = Event { getEvent' :: Updater a }
+  deriving (Functor, Applicative, Alternative, Monad)
 
-newtype Behavior a = Behavior { getBehavior' :: Updater a } deriving (Functor, Applicative, Monad, MonadFix)
+-- | Pull based Updater
+newtype Behavior a = Behavior { getBehavior' :: Updater a }
+  deriving (Functor, Applicative, Monad, MonadFix)
 
 unsafeLiftIO :: IO a -> Behavior a
 unsafeLiftIO = Behavior . liftIO
@@ -57,7 +63,7 @@ withGlobalLock io = do
 -- |
 -- Just for some quick debugging
 --
--- >putLine = onCommit . putStrLn
+-- >putLine = unsafeLiftIO . putStrLn
 debug :: String -> Behavior ()
 debug = unsafeLiftIO . putStrLn
 
@@ -88,7 +94,7 @@ newSignal a = do
 	value <- newIORef a
 	listeners <- List.empty
 	num <- modifyMVar signalNumVar $ \n -> return (n+1,n)
-	putStrLn (show num ++ ": new signal")
+	-- putStrLn (show num ++ ": new signal")
 	return (Signal value listeners num)
 
 readSignal :: Signal a -> IO a
@@ -99,7 +105,7 @@ writeSignal :: Signal a -> a -> DownState -> IO UpState
 writeSignal (Signal valueVar listeners num) value downState = do
 	writeIORef valueVar value
 	list <- List.toList listeners
-	putStrLn (show num ++ ": length: " ++ show (length list))
+	-- putStrLn (show num ++ ": length: " ++ show (length list))
 	let f weakRef = do
 			res <- deRefWeak weakRef
 			case res of
@@ -116,18 +122,18 @@ writeSignal (Signal valueVar listeners num) value downState = do
 -- remover don't count.
 addListener :: Signal a -> (a -> DownState -> IO UpState) -> IO (IO ())
 addListener signal listener = do
-	let listener' a downState = putStrLn (show (signalNum signal) ++ ": runListener") >> listener a downState
-	putStrLn $ (show $ signalNum signal) ++ ": add listener"
+	let listener' a downState = {- putStrLn (show (signalNum signal) ++ ": runListener") >> -} listener a downState
+	-- putStrLn $ (show $ signalNum signal) ++ ": add listener"
 	weakRef <- newIORef (error "should not be readable")
 	node <- List.append (unsafePerformIO $ readIORef weakRef) (signalListeners signal)
 	-- next who lines are just so (signal, listeners) won't be collected
 	key <- newIORef undefined
 	let remove = (List.delete node) >> newIORef key >> return ()
 	weak <- mkWeak key (signal, listener') $ Just $ do
-		putStrLn $ show (signalNum signal) ++ ": cleaning up signal"
+		-- putStrLn $ show (signalNum signal) ++ ": cleaning up signal"
 		remove
 	writeIORef weakRef weak
-	return (remove >> putStrLn ((show $ signalNum signal) ++": remove listener"))
+	return (remove {- >> putStrLn ((show $ signalNum signal) ++": remove listener") -})
 
 --- END: SIGNALS ---
 
