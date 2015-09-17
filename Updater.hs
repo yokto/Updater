@@ -24,7 +24,7 @@ import Data.Monoid
 import Control.Monad.Fix
 import Updater.Internal
 import System.IO.Unsafe
-import Debug.Trace
+-- import Debug.Trace
 import Foreign.StablePtr
 
 instance Monoid (Event a) where
@@ -46,7 +46,7 @@ cacheStateless (Event u) = Behavior (Event `fmap` cacheStateless' u)
 -- | The input will only be evaluated once,
 -- no matter how often the ouput 'Event' is used.
 -- Since it is stateful, when the output 'Event' is used, it will
--- immeduately continue with the last Event it received if
+-- immediately continue with the last Event it received if
 -- such an event exists.
 cacheStateful :: Event a -> Behavior (Event a)
 cacheStateful (Event d) = Behavior (Event `fmap` cacheStateful' d)
@@ -91,6 +91,6 @@ runGlobalEvent = unsafePerformIO $ do
 	_ <- newStablePtr runGlobalEvent
 	(ev, button) <- newEvent :: IO (Event (Event (IO ())), Event (IO ()) -> IO ())
 	var <- newEmptyMVar
-	forkIO $ (runEvent $ sample (onCommit (putMVar var ())) >> Left `fmap` join ev)
+	_ <- forkIO $ (runEvent $ sample (onCommit (putMVar var ())) >> Left `fmap` join ev)
 	takeMVar var
 	return button

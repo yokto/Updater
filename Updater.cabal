@@ -1,5 +1,5 @@
 Name:	Updater
-Version:	0.2
+Version:	0.3
 Cabal-Version:	>= 1.6
 License:	Apache-2.0
 License-File:	LICENSE
@@ -16,8 +16,9 @@ Library
   ghc-options:     -Wall -fno-warn-tabs
   Exposed-Modules:
     Updater
+    Updater.Internal
   Other-Modules:
-    Updater.List, Updater.Internal
+    Updater.List
 
 source-repository this
   type:        git

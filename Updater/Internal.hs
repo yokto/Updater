@@ -28,7 +28,7 @@ import Data.Monoid
 -- import Control.Exception.Base
 import Control.Monad.Fix
 import System.Mem.Weak
-import Debug.Trace
+-- import Debug.Trace
 import Data.IORef
 import System.IO.Unsafe
 
@@ -40,6 +40,9 @@ newtype Event a = Event { getEvent' :: Updater a }
 newtype Behavior a = Behavior { getBehavior' :: Updater a }
   deriving (Functor, Applicative, Monad, MonadFix)
 
+-- | Don't execute the io-action returned by 'newEvent'.
+-- Also, fork; don't block.
+-- 
 unsafeLiftIO :: IO a -> Behavior a
 unsafeLiftIO = Behavior . liftIO
 
@@ -67,6 +70,8 @@ withGlobalLock io = do
 debug :: String -> Behavior ()
 debug = unsafeLiftIO . putStrLn
 
+-- |
+-- This can be useful to spot when listeners are removed.
 debugCleanup :: String -> Behavior ()
 debugCleanup string = Behavior $ Updater $ \restCalc downState -> do
 	upState <- restCalc () downState
@@ -176,8 +181,8 @@ fixUpdater toUpdater = Updater $ \restCalc downState -> do
 	inputVar <- newEmptyMVar
 	runUpdater' (toUpdater $ unsafePerformIO $ takeMVar inputVar)
 		(\x downState2 -> do
-			empty <- isEmptyMVar inputVar
-			when (not empty) (error "continuous run twice")
+			isEmpty <- isEmptyMVar inputVar
+			when (not isEmpty) (error "continuous run twice")
 			putMVar inputVar x
 			restCalc x downState2
 			)

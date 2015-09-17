@@ -5,7 +5,6 @@ module Updater.List where
 
 import Data.IORef
 import Data.Maybe (isJust, isNothing)
-import System.IO (fixIO)
 
 -- | List handle.  Used for insertion and traversal starting at the beginning
 -- or end of the list.
